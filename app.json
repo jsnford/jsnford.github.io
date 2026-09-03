@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Fantasy Fives",
+    "slug": "fantasy-fives",
+    "scheme": "fantasyfives",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fantasyfives.app"
+    },
+    "android": {
+      "package": "com.fantasyfives.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F7A52",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single"
+    },
+    "experiments": {
+      "baseUrl": "/fantasy-fives"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-web-browser"
+    ]
+  }
+}
