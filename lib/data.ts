@@ -427,6 +427,39 @@ export async function getDonkeyResults(): Promise<DonkeyResultRow[]> {
   return (results ?? []).map((r: any) => ({ gw: r.gameweek, name: nameByCode.get(r.donkey_fpl_code) ?? "—", code: r.donkey_fpl_code, match: `${r.home_club} v ${r.away_club}` }));
 }
 
+// ---- DONKEY picks for a gameweek (who chose whom; who didn't pick) ----------
+
+export interface DonkeyManagerRef { userId: string; team: string; handle: string }
+export interface DonkeyPicksInfo {
+  byCode: Record<number, DonkeyManagerRef[]>;   // managers who chose each candidate
+  noPick: DonkeyManagerRef[];                    // league members with no pick this GW → auto 🫏
+}
+
+// League members = everyone who has ever made a DONKEY pick. For a given
+// gameweek, we bucket them by their chosen candidate and flag those who missed.
+export async function getDonkeyPicks(gameweek: number): Promise<DonkeyPicksInfo> {
+  const { data: allPicks } = await supabase.from("donkey_picks").select("user_id");
+  const memberIds = [...new Set((allPicks ?? []).map((p: any) => p.user_id))];
+  if (!memberIds.length) return { byCode: {}, noPick: [] };
+
+  const { data: profs } = await supabase.from("profiles").select("id, username, display_name").in("id", memberIds);
+  const refById = new Map<string, DonkeyManagerRef>(
+    (profs ?? []).map((p: any) => [p.id, { userId: p.id, team: p.display_name?.trim() || p.username || "Manager", handle: p.username ?? "" }]),
+  );
+  const ref = (id: string): DonkeyManagerRef => refById.get(id) ?? { userId: id, team: "Manager", handle: "" };
+
+  const { data: gwPicks } = await supabase.from("donkey_picks").select("user_id, fpl_code").eq("gameweek", gameweek);
+  const picked = new Set<string>();
+  const byCode: Record<number, DonkeyManagerRef[]> = {};
+  for (const p of (gwPicks ?? []) as any[]) {
+    picked.add(p.user_id);
+    (byCode[p.fpl_code] ??= []).push(ref(p.user_id));
+  }
+  for (const list of Object.values(byCode)) list.sort((a, b) => a.team.localeCompare(b.team));
+  const noPick = memberIds.filter((id) => !picked.has(id)).map(ref).sort((a, b) => a.team.localeCompare(b.team));
+  return { byCode, noPick };
+}
+
 // ---- DONKEY completed (finalised rankings for a past gameweek) --------------
 
 export interface DonkeyCompletedRow {

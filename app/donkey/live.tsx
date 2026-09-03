@@ -1,7 +1,7 @@
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
-import { badgeUrl, getDonkeyBoard, getMyDonkeyPick, playerPhoto, type DonkeyBoard } from "../../lib/data";
+import { badgeUrl, getDonkeyBoard, getDonkeyPicks, getMyDonkeyPick, playerPhoto, type DonkeyBoard, type DonkeyPicksInfo } from "../../lib/data";
 import { D, donkeyColor, fmtDonkey, MAXW, SERIF } from "./theme";
 
 const DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
@@ -11,6 +11,7 @@ export default function DonkeyLive() {
   const router = useRouter();
   const [board, setBoard] = useState<DonkeyBoard | null>(null);
   const [pick, setPick] = useState<number | null>(null);
+  const [picks, setPicks] = useState<DonkeyPicksInfo | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -23,8 +24,16 @@ export default function DonkeyLive() {
 
   const back = () => (router.canGoBack() ? router.back() : router.replace("/donkey"));
   const status = board?.status;
+  const started = status === "live" || status === "finished";   // reveal picks once KO has passed
   const state = status === "live" ? "LIVE" : status === "finished" ? "FULL TIME" : koText(board?.koISO ?? null);
   const rows = board ? [...board.rows].sort((a, b) => b.liveDonkey - a.liveDonkey) : [];
+
+  useEffect(() => {
+    if (!board?.hasGame || !started) { setPicks(null); return; }
+    let alive = true;
+    getDonkeyPicks(board.gwNumber).then((p) => alive && setPicks(p)).catch(() => {});
+    return () => { alive = false; };
+  }, [board?.hasGame, board?.gwNumber, started]);
 
   return (
     <View style={{ flex: 1, backgroundColor: D.bg }}>
@@ -66,12 +75,29 @@ export default function DonkeyLive() {
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontSize: 14, fontWeight: "700", color: D.ink }} numberOfLines={1}>{r.displayName}{mine ? "  · you" : ""}</Text>
                         <Text style={{ fontSize: 10.5, color: D.soft, marginTop: 2 }}>{r.liveXg.toFixed(2)} xG · {r.liveGoals} {r.liveGoals === 1 ? "goal" : "goals"} · {r.liveMinutes}′</Text>
+                        {started && picks ? (
+                          <Text style={{ fontSize: 10, color: D.faint, marginTop: 3 }} numberOfLines={2}>
+                            {picks.byCode[r.fplCode]?.length
+                              ? `Chosen by ${picks.byCode[r.fplCode].map((m) => m.team).join(", ")}`
+                              : "Chosen by no one"}
+                          </Text>
+                        ) : null}
                       </View>
                       <Text style={{ fontFamily: SERIF, fontSize: 20, color: donkeyColor(r.liveDonkey) }}>{fmtDonkey(r.liveDonkey)}</Text>
                     </View>
                   );
                 })}
               </View>
+
+              {/* auto-donkey: league members who didn't pick this week */}
+              {started && picks && picks.noPick.length ? (
+                <View style={{ borderWidth: 1, borderColor: D.line, borderRadius: 8, padding: 12, marginTop: 14, backgroundColor: "#E4D9CB" }}>
+                  <Text style={{ fontSize: 10.5, letterSpacing: 0.5, color: D.soft, fontWeight: "600" }}>NO PICK — AUTO 🫏</Text>
+                  <Text style={{ fontSize: 12, color: D.ink, marginTop: 4, lineHeight: 17 }}>
+                    {picks.noPick.map((m) => m.team).join(", ")} didn't pick this week and take a letter automatically.
+                  </Text>
+                </View>
+              ) : null}
             </>
           )}
         </View>
