@@ -6139,9 +6139,12 @@ function stepStroll() {
 
 // ── State, UI and the app bridge ───────────────────────────────────────────────
 const state = { place: opts.place, mode: opts.mode, view: opts.view, spin: opts.spin };
-function setPlace(place, { move = true } = {}) {
+// view: switch the camera to that framing at the same time (the app's place picker always
+// flies to the corner view, whatever view the user had chosen before).
+function setPlace(place, { move = true, view } = {}) {
   if (!PLACES[place]) return;
   state.place = place;
+  if (view && ['iso', 'top', 'street'].includes(view)) state.view = view;
   document.getElementById('title').textContent = PLACES[place].title;
   document.getElementById('subtitle').textContent = PLACES[place].sub;
   if (move) goTo();
@@ -6231,8 +6234,8 @@ function hideHint() { clearTimeout(hintTimer); hint.style.opacity = 0; }
 }
 
 // Messages from the host: the React Native WebView, an iframe parent, or window.LittlePlaces3D.
-function emit(type) {
-  const msg = JSON.stringify({ source: 'littleplaces-3d', type, ...state });
+function emit(type, extra = {}) {
+  const msg = JSON.stringify({ source: 'littleplaces-3d', type, ...state, ...extra });
   if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(msg);
   else if (window.parent !== window) window.parent.postMessage(JSON.parse(msg), '*');
 }
@@ -6240,7 +6243,7 @@ function onMessage(e) {
   let d = e.data;
   if (typeof d === 'string') { try { d = JSON.parse(d); } catch { return; } }
   if (!d || typeof d !== 'object' || d.source === 'littleplaces-3d') return;
-  if (d.place) setPlace(d.place);
+  if (d.place) setPlace(d.place, { view: d.view });
   if (d.mode) setMode(d.mode);
   if (d.view) setView(d.view);
   if (typeof d.spin === 'boolean') setSpin(d.spin);
@@ -6557,6 +6560,8 @@ Promise.race([
 
 requestAnimationFrame(() => {
   document.getElementById('loading').classList.add('done');
-  emit('ready');
+  // 'ready' carries the list of places (in the order of the page's own buttons) so a host app
+  // can offer them in its own picker without keeping a copy.
+  emit('ready', { places: [...document.querySelectorAll('[data-place]')].filter(b => b.dataset.place !== 'all').map(b => ({ id: b.dataset.place, name: PLACES[b.dataset.place].title, short: b.textContent })) });
 });
 </script>
