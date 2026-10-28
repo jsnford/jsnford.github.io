@@ -152,7 +152,11 @@ const params = new URLSearchParams(location.search);
 // A host app can set options before the page runs: window.__LP_PARAMS = { place: 'jumbi', ui: '0' }.
 for (const [k, v] of Object.entries(window.__LP_PARAMS || {})) params.set(k, String(v));
 const opts = {
-  place: ['all', 'renegade', 'jumbi', 'mae', 'hausu', 'tamil', 'camberwell', 'halfcut', 'donia', 'holycarrot', 'titas', 'toms'].includes(params.get('place')) ? params.get('place') : 'all',
+  place: ['all', 'renegade', 'jumbi', 'mae', 'hausu', 'tamil', 'camberwell', 'halfcut', 'donia', 'holycarrot', 'titas', 'toms'].includes(params.get('place')) ? params.get('place') : (params.get('build') === '1' ? 'donia' : 'all'),
+  // build=1 (for recording the showreel, never set by the live app): the first frame shows only
+  // the chosen place on the cream, then the rest of the street rises out of the ground around
+  // it, staggered by distance, before the idle drift starts. See the "Build-in intro" block.
+  build: params.get('build') === '1',
   mode: params.get('mode') === 'night' ? 'night' : 'day',
   view: ['iso', 'top', 'street', 'inside'].includes(params.get('view')) ? params.get('view') : 'iso',
   spin: params.get('spin') === '1',
@@ -5753,6 +5757,18 @@ function stepFloaters(dt, t) {
   floatMesh.instanceMatrix.needsUpdate = true;
 }
 
+// For the build-in intro (?build=1): every vertex carries the world centre of the part it
+// belongs to (aCentre), so a whole part rises together, and a flag (aFlat) for thin parts on
+// the ground (pavements, roads, grass, kerbs, water), which use their own position instead and so
+// spread outwards with the wave rather than lifting as one slab.
+function buildTagGeometry(g, box) {
+  // Flat means low and on the ground: a roof slab or balcony is thin too, but must lift with its building.
+  const n = g.attributes.position.count, c = box.getCenter(new THREE.Vector3()), flat = box.max.y - box.min.y < 0.6 && box.min.y < 0.6 ? 1 : 0;
+  const centre = new Float32Array(n * 2), flatA = new Float32Array(n);
+  for (let i = 0; i < n; i++) { centre[i * 2] = c.x; centre[i * 2 + 1] = c.z; flatA[i] = flat; }
+  g.setAttribute('aCentre', new THREE.BufferAttribute(centre, 2));
+  g.setAttribute('aFlat', new THREE.BufferAttribute(flatA, 1));
+}
 // Merge static meshes that share a material (and venue) to keep draw calls low on phones.
 function mergeStatic() {
   world.updateMatrixWorld(true);
@@ -5777,7 +5793,9 @@ function mergeStatic() {
       const n = g.attributes.position.count / 3;
       if (o.userData.place) ranges.push([tri, tri + n, o.userData.place]);
       tri += n;
-      return g.applyMatrix4(o.matrixWorld);
+      g.applyMatrix4(o.matrixWorld);
+      if (opts.build) buildTagGeometry(g, new THREE.Box3().setFromObject(o));
+      return g;
     });
     const merged = mergeGeometries(geos);
     if (!merged) continue;
@@ -6181,7 +6199,7 @@ const SPIN_RATE = 2 * Math.PI / 60;   // one turn a minute
 // frames, so a per-frame step piles up unevenly. The clock is the honest reference.
 let refreshHz = 0, hzSamples = [], spinFrom = null;
 function stepSpin() {
-  if (!state.spin || anim) { spinFrom = null; return false; }
+  if (!state.spin || anim || build) { spinFrom = null; return false; }
   const off = camera.position.clone().sub(controls.target), sph = new THREE.Spherical().setFromVector3(off);
   // The clock is read through a light low-pass filter: on phones the frame clock wobbles a
   // little against the display's vsync, which showed as a faint jitter even in Safari.
@@ -6252,6 +6270,9 @@ window.addEventListener('message', onMessage);
 document.addEventListener('message', onMessage); // Android WebView
 window.LittlePlaces3D = {
   setPlace, setMode, setView, setSpin,
+  // Debug for ?build=1: read or set how far the street has built (0 = the start place alone, 1 = all).
+  build: { get: () => uBuild.value, set: v => { build = null; uBuild.value = v; sun.shadow.intensity = v; requestRender(); } },
+  scene: () => scene,   // debug
   showStats: on => { statsBox.style.display = on === false ? 'none' : 'block'; },
   // Debug: the camera's exact orbit angle, for measuring motion frame by frame.
   theta: () => new THREE.Spherical().setFromVector3(camera.position.clone().sub(controls.target)).theta,
@@ -6513,10 +6534,11 @@ function frame(now) {
   const m = stepMode(now);
   const w = stepStroll();
   const sp = stepSpin();
+  const b = stepBuild(now);
   const c = anim || sp ? false : controls.update();
-  const ambientOnly = opts.motion && !(a || m || w || c || sp || needsFull);   // false whenever the camera moved
+  const ambientOnly = opts.motion && !(a || m || w || c || sp || b || needsFull);   // false whenever the camera moved
   needsFull = false;
-  if ((a || m || w || c || sp || dirty) && !(ambientOnly && now - lastRendered < 30)) {
+  if ((a || m || w || c || sp || b || dirty) && !(ambientOnly && now - lastRendered < 30)) {
     if (bokeh) bokeh.uniforms.focus.value = camera.position.distanceTo(controls.target);
     if (composer) composer.render(); else renderer.render(scene, camera);
     lastFrameInfo = { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles };
@@ -6532,6 +6554,94 @@ function frame(now) {
 // Startup runs last, after every declaration above, so nothing it calls can reach an
 // uninitialised binding (that bit us with FLOAT_HIDE, lastCullKey and frameGaps).
 applyLighting(state.mode === 'night' ? 1 : 0);
+
+// ── Build-in intro (?build=1, recording only) ──────────────────────────────────
+// Every material in the scene gets a shader patch: a part whose turn hasn't come is squashed
+// flat to just under the ground (so it rises out of it), and fragments beyond the wave are
+// discarded (so the ground spreads outwards rather than appearing all at once). With build
+// off nothing is patched. Shadows are faded in over the same time, since the shadow map is
+// drawn from the unpatched depth material and would otherwise show the whole street's
+// shadows on the first frame.
+// Timing: uBuild runs 0 → 1 over buildms. A part whose centre is d metres past the start
+// place's radius (uBuildR.x) begins to rise at uBuild = d / uBuildR.y × (1 − uBuildR.z) and
+// takes uBuildR.z of the whole to rise, with a cubic ease-out, so the street builds outwards
+// in a wave and each part lifts gently rather than popping. buildr=12 sets that radius in
+// metres (the parts inside it make up the first frame); buildms=2600 the length.
+const uBuild = { value: opts.build ? 0 : 1 };
+const uBuildC = { value: PLACES[state.place].c.clone() };
+const uBuildR = { value: new THREE.Vector3(+params.get('buildr') || 12, 110, 0.35) };   // first-frame radius, the farthest part, the rise as a share of the whole
+let build = opts.build ? { t0: null, delay: 700, dur: +params.get('buildms') || 2600 } : null;
+if (opts.build) {
+  const BUILD_Y = -1.2;   // everything rises from just under the island slabs
+  scene.updateMatrixWorld(true);
+  const patched = new Set(), seenGeo = new Set(), tmpM = new THREE.Matrix4(), tmpV = new THREE.Vector3();
+  scene.traverse(o => {
+    if (!o.isMesh || !o.material) return;
+    if (o.isInstancedMesh) {
+      // Instances rise about their own position; bricks about their venue's centre, so a
+      // brick wall lifts with its building rather than course by course.
+      const n = o.count, centre = new Float32Array(n * 2), flatA = new Float32Array(n);
+      const gb = (o.geometry.boundingBox || o.geometry.computeBoundingBox() || o.geometry.boundingBox);
+      const low = gb.max.y - gb.min.y < 0.15;
+      for (let i = 0; i < n; i++) {
+        o.getMatrixAt(i, tmpM); tmpV.setFromMatrixPosition(tmpM).applyMatrix4(o.matrixWorld);
+        const venue = o === brickMesh && bricks[i] && PLACES[bricks[i].place];
+        centre[i * 2] = venue ? venue.c.x : tmpV.x; centre[i * 2 + 1] = venue ? venue.c.z : tmpV.z;
+        flatA[i] = !venue && low && tmpV.y < 0.2 ? 1 : 0;
+      }
+      o.geometry.setAttribute('aCentre', new THREE.InstancedBufferAttribute(centre, 2));
+      o.geometry.setAttribute('aFlat', new THREE.InstancedBufferAttribute(flatA, 1));
+    } else if (!o.geometry.attributes.aCentre) {
+      if (seenGeo.has(o.geometry)) o.geometry = o.geometry.clone();   // shared between parts in different places
+      seenGeo.add(o.geometry);
+      buildTagGeometry(o.geometry, new THREE.Box3().setFromObject(o));
+    }
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach(patchBuild);
+  });
+  function patchBuild(m) {
+    if (patched.has(m)) return;
+    patched.add(m);
+    const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey !== THREE.Material.prototype.customProgramCacheKey ? m.customProgramCacheKey : null;
+    m.onBeforeCompile = sh => {
+      prev.call(m, sh);
+      if (!sh.vertexShader.includes('#include <begin_vertex>')) return;   // sprites, points: left alone
+      sh.uniforms.uBuild = uBuild; sh.uniforms.uBuildC = uBuildC; sh.uniforms.uBuildR = uBuildR;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uBuild; uniform vec3 uBuildC; uniform vec3 uBuildR; attribute vec2 aCentre; attribute float aFlat; varying vec2 vBuildXZ;')
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          #ifdef USE_INSTANCING
+            mat4 bM = modelMatrix * instanceMatrix;
+          #else
+            mat4 bM = modelMatrix;
+          #endif
+          vec4 bw = bM * vec4(transformed, 1.0);
+          vBuildXZ = bw.xz;
+          float bd = max(0.0, distance(mix(aCentre, bw.xz, aFlat), uBuildC.xz) - uBuildR.x);
+          float bt = bd <= 0.0 ? 1.0 : clamp((uBuild - clamp(bd / uBuildR.y, 0.0, 1.0) * (1.0 - uBuildR.z)) / uBuildR.z, 0.0, 1.0);
+          bt = 1.0 - pow(1.0 - bt, 3.0);
+          if (bt < 1.0) {
+            bw.y = ${BUILD_Y.toFixed(2)} + (bw.y - ${BUILD_Y.toFixed(2)}) * max(bt, 0.002);
+            transformed = (inverse(bM) * bw).xyz;
+          }`);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float uBuild; uniform vec3 uBuildC; uniform vec3 uBuildR; varying vec2 vBuildXZ;')
+        .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+          float fd = max(0.0, distance(vBuildXZ, uBuildC.xz) - uBuildR.x - 6.0);   // 6 m past the radius: a part on the edge keeps its far side
+          if (fd > 0.0 && uBuild <= clamp(fd / uBuildR.y, 0.0, 1.0) * (1.0 - uBuildR.z)) discard;`);
+    };
+    m.customProgramCacheKey = () => (prevKey ? prevKey.call(m) : prev.toString()) + '|build';
+  }
+  sun.shadow.intensity = 0;
+}
+function stepBuild(now) {
+  if (!build) return false;
+  if (build.t0 === null) { build.t0 = now + build.delay; return false; }   // the first frame has been drawn: hold, then go
+  const k = Math.min(1, Math.max(0, (now - build.t0) / build.dur));
+  uBuild.value = k;            // linear: each part eases on its own in the shader
+  sun.shadow.intensity = k;
+  if (k >= 1) { build = null; uBuild.value = 1; sun.shadow.intensity = 1; }
+  return true;
+}
 renderer.compile(scene, camera);
 watchFrom = performance.now() + 6000;
 document.getElementById('title').textContent = PLACES[state.place].title;
@@ -6558,7 +6668,8 @@ Promise.race([
   new Promise(r => setTimeout(r, 2500)),
 ]).then(drawSigns).catch(() => {});
 
-requestAnimationFrame(() => {
+const afterFirstFrame = fn => requestAnimationFrame(() => opts.build ? requestAnimationFrame(fn) : fn());
+afterFirstFrame(() => {
   document.getElementById('loading').classList.add('done');
   // 'ready' carries the list of places (in the order of the page's own buttons) so a host app
   // can offer them in its own picker without keeping a copy.
