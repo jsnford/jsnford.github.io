@@ -4041,6 +4041,7 @@ function buildIsland() {
     halo.rotation.x = -Math.PI / 2;
     halo.position.set((FULL.x0 + FULL.x1) / 2, -0.76, (FULL.z0 + FULL.z1) / 2);
     halo.material.userData.noMerge = true;
+    halo.material.userData.noBuild = true;   // the ground glow stays whole through the build-in intro
     scene.add(halo);
   }
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), new THREE.ShadowMaterial({ color: '#3b2a3a', opacity: 0.22 }));
@@ -4048,6 +4049,7 @@ function buildIsland() {
   ground.position.set((OUT.x0 + OUT.x1) / 2, -0.75, (OUT.z0 + OUT.z1) / 2);
   ground.receiveShadow = true;
   ground.material.userData.noMerge = true;
+  ground.material.userData.noBuild = true;   // shadows fade in with the build instead (sun.shadow.intensity)
   scene.add(ground);
 
   // ── Tidy road ends ──
@@ -6613,7 +6615,7 @@ if (opts.build) {
     (Array.isArray(o.material) ? o.material : [o.material]).forEach(patchBuild);
   });
   function patchBuild(m) {
-    if (patched.has(m)) return;
+    if (patched.has(m) || m.userData.noBuild) return;   // the ground glow and shadow catcher: cutting them shows as a lighter patch on the cream
     patched.add(m);
     const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey !== THREE.Material.prototype.customProgramCacheKey ? m.customProgramCacheKey : null;
     m.onBeforeCompile = sh => {
