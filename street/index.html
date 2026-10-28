@@ -154,9 +154,11 @@ for (const [k, v] of Object.entries(window.__LP_PARAMS || {})) params.set(k, Str
 const opts = {
   place: ['all', 'renegade', 'jumbi', 'mae', 'hausu', 'tamil', 'camberwell', 'halfcut', 'donia', 'holycarrot', 'titas', 'toms'].includes(params.get('place')) ? params.get('place') : (params.get('build') === '1' ? 'donia' : 'all'),
   // build=1 (for recording the showreel, never set by the live app): the first frame shows only
-  // the chosen place on the cream, then the rest of the street rises out of the ground around
-  // it, staggered by distance, before the idle drift starts. See the "Build-in intro" block.
-  build: params.get('build') === '1',
+  // the chosen place on the cream and waits; LittlePlaces3D.buildOut() then raises the rest of
+  // the street out of the ground around it, staggered by distance, before the idle drift
+  // starts. build=auto does the same but starts by itself 0.7 s after the first frame. See the
+  // "Build-in intro" block.
+  build: ['1', 'auto'].includes(params.get('build')) ? params.get('build') : null,
   mode: params.get('mode') === 'night' ? 'night' : 'day',
   view: ['iso', 'top', 'street', 'inside'].includes(params.get('view')) ? params.get('view') : 'iso',
   spin: params.get('spin') === '1',
@@ -6270,6 +6272,18 @@ window.addEventListener('message', onMessage);
 document.addEventListener('message', onMessage); // Android WebView
 window.LittlePlaces3D = {
   setPlace, setMode, setView, setSpin,
+  // ?build=1: raise the rest of the street around the start place. dur in seconds (or ms);
+  // `to` flies the camera at the same time, e.g. buildOut({ dur: 2.5, to: 'all' }) pulls back
+  // to the whole street's corner view over the same 2.5 s; the idle drift (spin=1) then
+  // carries on from wherever the camera is.
+  buildOut: ({ dur = 2.6, to, view = 'iso' } = {}) => {
+    if (!opts.build) return false;
+    const ms = dur < 100 ? dur * 1000 : dur;
+    build = { t0: performance.now(), auto: false, delay: 0, dur: ms };
+    if (to && PLACES[to]) { setPlace(to, { view }); if (anim) anim.dur = ms; }
+    requestRender();
+    return true;
+  },
   // Debug for ?build=1: read or set how far the street has built (0 = the start place alone, 1 = all).
   build: { get: () => uBuild.value, set: v => { build = null; uBuild.value = v; sun.shadow.intensity = v; requestRender(); } },
   scene: () => scene,   // debug
@@ -6534,7 +6548,7 @@ function frame(now) {
   const m = stepMode(now);
   const w = stepStroll();
   const sp = stepSpin();
-  const b = stepBuild(now);
+  const b = stepBuild();
   const c = anim || sp ? false : controls.update();
   const ambientOnly = opts.motion && !(a || m || w || c || sp || b || needsFull);   // false whenever the camera moved
   needsFull = false;
@@ -6570,7 +6584,7 @@ applyLighting(state.mode === 'night' ? 1 : 0);
 const uBuild = { value: opts.build ? 0 : 1 };
 const uBuildC = { value: PLACES[state.place].c.clone() };
 const uBuildR = { value: new THREE.Vector3(+params.get('buildr') || 12, 110, 0.35) };   // first-frame radius, the farthest part, the rise as a share of the whole
-let build = opts.build ? { t0: null, delay: 700, dur: +params.get('buildms') || 2600 } : null;
+let build = opts.build ? { t0: null, auto: opts.build === 'auto', delay: 700, dur: +params.get('buildms') || 2600 } : null;
 if (opts.build) {
   const BUILD_Y = -1.2;   // everything rises from just under the island slabs
   scene.updateMatrixWorld(true);
@@ -6633,10 +6647,15 @@ if (opts.build) {
   }
   sun.shadow.intensity = 0;
 }
-function stepBuild(now) {
+// Read from performance.now() rather than the frame timestamp, so a recording harness that
+// steps the clock itself drives it.
+function stepBuild() {
   if (!build) return false;
-  if (build.t0 === null) { build.t0 = now + build.delay; return false; }   // the first frame has been drawn: hold, then go
-  const k = Math.min(1, Math.max(0, (now - build.t0) / build.dur));
+  if (build.t0 === null) {
+    if (!build.auto) return false;                           // waiting for buildOut()
+    build.t0 = performance.now() + build.delay; return false;   // the first frame has been drawn: hold, then go
+  }
+  const k = Math.min(1, Math.max(0, (performance.now() - build.t0) / build.dur));
   uBuild.value = k;            // linear: each part eases on its own in the shader
   sun.shadow.intensity = k;
   if (k >= 1) { build = null; uBuild.value = 1; sun.shadow.intensity = 1; }
